@@ -9,8 +9,9 @@ Use this file after each migration phase and before declaring the repository mig
 - Summarize the first root-cause error instead of pasting the whole build log.
 - Apply the smallest fix that addresses that failed stage.
 - Rerun the same stage before moving on.
+- If the blocked stage is caused by permissions, dependency access, private registries, wrapper state, or local cache access, mark verification as blocked and continue static migration work instead of treating it as a code failure.
 
-Use `scripts/verify_repo.py` when possible so the repository gets a stable `verification.md`, `failure-summary.md`, and raw logs under `logs/`.
+Use `scripts/verify_repo.py` when possible so the repository gets a stable `verification.md`, `failure-summary.md`, `verification-handoff.md`, and raw logs under `logs/`.
 
 ## Required Outputs
 
@@ -49,6 +50,8 @@ Use `scripts/verify_repo.py` when possible so the repository gets a stable `veri
 - Test suite passes or known failures are documented and accepted
 - Application starts successfully
 - No unresolved high-severity findings from the scanner
+
+If verification is blocked by the environment, the migration can still be handed off, but it is not complete until the user reruns compile, test, and startup checks in an allowed environment.
 
 ## Failure Categories To Triage First
 

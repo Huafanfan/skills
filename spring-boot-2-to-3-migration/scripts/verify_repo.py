@@ -12,6 +12,12 @@ import textwrap
 import time
 from pathlib import Path
 
+BLOCKED_CATEGORIES = {
+    "build_environment",
+    "build_wrapper",
+    "dependency_resolution",
+}
+
 
 def preferred_maven_command(root: Path) -> str:
     wrapper = root / "mvnw"
@@ -269,8 +275,8 @@ def build_report(
     results: list[dict],
     stopped_after_failure: bool,
 ) -> dict:
-    failed_stage = next((item for item in results if item["status"] != "passed"), None)
-    overall_status = "passed" if failed_stage is None else failed_stage["status"]
+    first_non_passed = next((item for item in results if item["status"] != "passed"), None)
+    overall_status = "passed" if first_non_passed is None else first_non_passed["status"]
     report = {
         "repository": str(root),
         "build_tool": build_tool,
@@ -280,16 +286,27 @@ def build_report(
         "commands": commands,
         "results": results,
     }
-    if failed_stage:
+    if first_non_passed and first_non_passed["status"] == "failed":
         report["failure_summary"] = {
-            "stage": failed_stage["stage"],
-            "status": failed_stage["status"],
-            "category": failed_stage["category"],
-            "summary": failed_stage["summary"],
-            "key_lines": failed_stage["key_lines"],
-            "rerun_command": failed_stage["command"],
-            "suggested_repairs": suggested_repairs(failed_stage["category"]),
-            "log_path": failed_stage["log_path"],
+            "stage": first_non_passed["stage"],
+            "status": first_non_passed["status"],
+            "category": first_non_passed["category"],
+            "summary": first_non_passed["summary"],
+            "key_lines": first_non_passed["key_lines"],
+            "rerun_command": first_non_passed["command"],
+            "suggested_repairs": suggested_repairs(first_non_passed["category"]),
+            "log_path": first_non_passed["log_path"],
+        }
+    if first_non_passed and first_non_passed["status"] == "blocked":
+        report["verification_handoff"] = {
+            "stage": first_non_passed["stage"],
+            "status": first_non_passed["status"],
+            "category": first_non_passed["category"],
+            "summary": first_non_passed["summary"],
+            "key_lines": first_non_passed["key_lines"],
+            "rerun_command": first_non_passed["command"],
+            "user_actions": suggested_repairs(first_non_passed["category"]),
+            "log_path": first_non_passed["log_path"],
         }
     return report
 
@@ -317,7 +334,35 @@ def report_to_markdown(report: dict) -> str:
             lines.append(f"   - Summary: {result['summary']}")
             if result["key_lines"]:
                 lines.append(f"   - Key lines: {' | '.join(result['key_lines'])}")
-    if "failure_summary" in report:
+    if "verification_handoff" in report:
+        handoff = report["verification_handoff"]
+        lines.extend(
+            [
+                "",
+                "## Verification Handoff",
+                "",
+                f"- Verification is blocked at stage: `{handoff['stage']}`",
+                f"- Blocker category: `{handoff['category']}`",
+                f"- Summary: {handoff['summary']}",
+                f"- Rerun when the environment is ready: `{handoff['rerun_command']}`",
+                f"- Log: `{handoff['log_path']}`",
+                "",
+                "## User Action Required",
+                "",
+            ]
+        )
+        for item in handoff["user_actions"]:
+            lines.append(f"- {item}")
+        lines.extend(
+            [
+                "",
+                "## Migration Guidance",
+                "",
+                "- Continue static migration work that does not depend on this blocked verification step.",
+                "- Do not declare the repository fully migrated until the user reruns verification in a permitted environment.",
+            ]
+        )
+    elif "failure_summary" in report:
         failure = report["failure_summary"]
         lines.extend(
             [
@@ -381,15 +426,61 @@ def failure_to_markdown(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def handoff_to_markdown(report: dict) -> str:
+    handoff = report["verification_handoff"]
+    lines = [
+        "# Spring Boot 2 To 3 Verification Handoff",
+        "",
+        f"- Repository: `{report['repository']}`",
+        f"- Stage: `{handoff['stage']}`",
+        f"- Status: `{handoff['status']}`",
+        f"- Category: `{handoff['category']}`",
+        f"- Summary: {handoff['summary']}",
+        f"- Rerun command: `{handoff['rerun_command']}`",
+        f"- Log: `{handoff['log_path']}`",
+        "",
+        "## Key Lines",
+        "",
+    ]
+    if handoff["key_lines"]:
+        for line in handoff["key_lines"]:
+            lines.append(f"- {line}")
+    else:
+        lines.append("- No high-signal lines were extracted automatically; inspect the full log.")
+    lines.extend(
+        [
+            "",
+            "## User Action Required",
+            "",
+        ]
+    )
+    for item in handoff["user_actions"]:
+        lines.append(f"- {item}")
+    lines.extend(
+        [
+            "",
+            "## What The Agent Should Do Next",
+            "",
+            "- Continue static migration edits that do not require this blocked verification step.",
+            "- Leave final dependency download, compile, test, or startup verification to a user-permitted environment.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def write_outputs(report: dict, output_dir: Path | None, output_format: str) -> None:
     verification_markdown = report_to_markdown(report)
     failure_markdown = failure_to_markdown(report) if "failure_summary" in report else None
+    handoff_markdown = handoff_to_markdown(report) if "verification_handoff" in report else None
     if not output_dir:
         if output_format in {"markdown", "both"}:
             sys.stdout.write(verification_markdown)
             if failure_markdown:
                 sys.stdout.write("\n")
                 sys.stdout.write(failure_markdown)
+            if handoff_markdown:
+                sys.stdout.write("\n")
+                sys.stdout.write(handoff_markdown)
         if output_format in {"json", "both"}:
             if output_format == "both":
                 sys.stdout.write("\n")
@@ -402,11 +493,18 @@ def write_outputs(report: dict, output_dir: Path | None, output_format: str) -> 
         (output_dir / "verification.md").write_text(verification_markdown, encoding="utf-8")
         if failure_markdown:
             (output_dir / "failure-summary.md").write_text(failure_markdown, encoding="utf-8")
+        if handoff_markdown:
+            (output_dir / "verification-handoff.md").write_text(handoff_markdown, encoding="utf-8")
     if output_format in {"json", "both"}:
         (output_dir / "verification.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         if "failure_summary" in report:
             (output_dir / "failure-summary.json").write_text(
                 json.dumps(report["failure_summary"], indent=2),
+                encoding="utf-8",
+            )
+        if "verification_handoff" in report:
+            (output_dir / "verification-handoff.json").write_text(
+                json.dumps(report["verification_handoff"], indent=2),
                 encoding="utf-8",
             )
 
@@ -418,7 +516,7 @@ def parse_args() -> argparse.Namespace:
         epilog=textwrap.dedent(
             """\
             Examples:
-              verify_repo.py /repo --stage all --output-dir /repo/.codex/spring-boot-2-to-3-migration
+              verify_repo.py /repo --stage all --output-dir /repo/.migration-work/spring-boot-2-to-3
               verify_repo.py /repo --stage startup --startup-command "./mvnw -q spring-boot:run"
               verify_repo.py /repo --stage test --test-command "./gradlew test --tests com.example.SomeTest"
             """
@@ -488,11 +586,13 @@ def main() -> int:
             continue
 
         exit_code, output, duration_seconds, timed_out = run_command(root, command, args.timeout_seconds)
-        status = "passed" if exit_code == 0 else ("timed_out" if timed_out else "failed")
+        status = "passed" if exit_code == 0 else "failed"
         category, summary = ("none", "Verification stage passed.")
         key_lines: list[str] = []
         if status != "passed":
             category, summary = classify_failure(output)
+            if category in BLOCKED_CATEGORIES:
+                status = "blocked"
             key_lines = extract_key_lines(output)
 
         log_path = ""
@@ -527,7 +627,11 @@ def main() -> int:
         stopped_after_failure=stopped_after_failure,
     )
     write_outputs(report, output_dir, args.format)
-    return 0 if report["overall_status"] == "passed" else 1
+    if report["overall_status"] == "passed":
+        return 0
+    if report["overall_status"] == "blocked":
+        return 3
+    return 1
 
 
 if __name__ == "__main__":

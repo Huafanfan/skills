@@ -116,8 +116,8 @@ Expected remediation:
 ## Commands
 
 ```bash
-rg -n "import javax\\.(persistence|validation|servlet|annotation|ws\\.rs|jms)\\." .
-rg -n "WebSecurityConfigurerAdapter|authorizeRequests\\(|antMatchers\\(|mvcMatchers\\(" .
-rg -n "spring.factories|EnableAutoConfiguration" .
-rg -n "createQuery\\(" .
+python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "import javax\\.(persistence|validation|servlet|annotation|ws\\.rs|jms)\\."
+python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "WebSecurityConfigurerAdapter|authorizeRequests\\(|antMatchers\\(|mvcMatchers\\("
+python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "spring\\.factories|EnableAutoConfiguration"
+python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "createQuery\\("
 ```

@@ -39,5 +39,5 @@ Inspect:
 java -version
 ./mvnw -q -DskipTests compile
 ./gradlew help
-rg -n "sun\\.|com\\.sun\\.|javax\\.xml\\.bind|SecurityManager" .
+python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "sun\\.|com\\.sun\\.|javax\\.xml\\.bind|SecurityManager"
 ```

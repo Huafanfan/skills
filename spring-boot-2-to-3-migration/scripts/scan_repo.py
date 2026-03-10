@@ -19,6 +19,7 @@ IGNORE_DIRS = {
     ".git",
     ".gradle",
     ".idea",
+    ".migration-work",
     ".mvn",
     ".settings",
     "build",
@@ -807,6 +808,10 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
         if item not in commands:
             commands.append(item)
 
+    def search_command(pattern: str) -> str:
+        escaped = pattern.replace('"', '\\"')
+        return f'python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "{escaped}"'
+
     add_command("Phase 0", "Capture branch and working tree state", "git status --short")
     add_command("Phase 0", "Confirm runtime Java", "java -version")
     if build_cmd:
@@ -814,12 +819,12 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
     if test_cmd:
         add_command("Phase 0", "Capture pre-migration test baseline", test_cmd)
 
-    add_command("Phase 1", "Find Jakarta migration targets", r'rg -n "import javax\.(annotation|ejb|el|inject|interceptor|jms|mail|persistence|servlet|transaction|validation|websocket|ws\.rs)\." .')
-    add_command("Phase 1", "Find legacy Spring Security DSL usage", r'rg -n "WebSecurityConfigurerAdapter|authorizeRequests\(|antMatchers\(|mvcMatchers\(" .')
-    add_command("Phase 1", "Find auto-configuration registrations", r'rg -n "spring\.factories|EnableAutoConfiguration|AutoConfiguration\.imports" .')
+    add_command("Phase 1", "Find Jakarta migration targets", search_command(r"import javax\.(annotation|ejb|el|inject|interceptor|jms|mail|persistence|servlet|transaction|validation|websocket|ws\.rs)\."))
+    add_command("Phase 1", "Find legacy Spring Security DSL usage", search_command(r"WebSecurityConfigurerAdapter|authorizeRequests\(|antMatchers\(|mvcMatchers\("))
+    add_command("Phase 1", "Find auto-configuration registrations", search_command(r"spring\.factories|EnableAutoConfiguration|AutoConfiguration\.imports"))
 
     if build["spring_cloud_versions"]:
-        add_command("Phase 1.5", "Find Spring Cloud config-loading files", r'rg -n "spring\.cloud|spring\.config\.import|configserver:|bootstrap" .')
+        add_command("Phase 1.5", "Find Spring Cloud config-loading files", search_command(r"spring\.cloud|spring\.config\.import|configserver:|bootstrap"))
 
     if build["has_maven"]:
         add_command(
@@ -835,11 +840,11 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
         add_command("Phase 2", "Review Gradle dependency alignment", f"{gradle} dependencies")
 
     if text_scan["stats"]["configuration_properties"]:
-        add_command("Phase 3", "Inspect configuration-properties migration surface", r'rg -n "@ConfigurationProperties|@ConstructorBinding" .')
+        add_command("Phase 3", "Inspect configuration-properties migration surface", search_command(r"@ConfigurationProperties|@ConstructorBinding"))
     if text_scan["stats"]["resttemplate_httpclient"]:
-        add_command("Phase 3", "Inspect outbound HTTP client wiring", r'rg -n "RestTemplate|HttpComponentsClientHttpRequestFactory|CloseableHttpClient|org\.apache\.http\." .')
+        add_command("Phase 3", "Inspect outbound HTTP client wiring", search_command(r"RestTemplate|HttpComponentsClientHttpRequestFactory|CloseableHttpClient|org\.apache\.http\."))
     if text_scan["stats"]["hibernate_queries"]:
-        add_command("Phase 3", "Inspect Hibernate query usage", r'rg -n "createQuery\(" .')
+        add_command("Phase 3", "Inspect Hibernate query usage", search_command(r"createQuery\("))
 
     if build_cmd:
         add_command("Phase 4", "Compile on the target stack", build_cmd)
@@ -848,7 +853,7 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
     add_command(
         "Phase 4",
         "Run verification with captured logs",
-        "python3 <skill-dir>/scripts/verify_repo.py <repo> --stage all --output-dir <repo>/.codex/spring-boot-2-to-3-migration",
+        "python3 <skill-dir>/scripts/verify_repo.py <repo> --stage all --output-dir <repo>/.migration-work/spring-boot-2-to-3",
     )
 
     return commands
@@ -1031,7 +1036,7 @@ def parse_args() -> argparse.Namespace:
             """\
             Examples:
               scan_repo.py /repo
-              scan_repo.py /repo --format both --output-dir /repo/.codex/spring-boot-2-to-3-migration
+              scan_repo.py /repo --format both --output-dir /repo/.migration-work/spring-boot-2-to-3
             """
         ),
     )

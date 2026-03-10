@@ -13,6 +13,7 @@ Scan Spring Boot 2.x repositories, identify migration blockers, and drive phased
 
 - `scripts/scan_repo.py`: scans the repository and writes both a migration report and an execution-oriented TODO pack in Markdown and JSON
 - `scripts/verify_repo.py`: runs compile, test, startup, or smoke verification, captures logs, and writes a repair-oriented failure summary
+- `scripts/search_repo.py`: portable repository search helper used when `rg` is unavailable or when you want the same workflow across macOS and Linux
 - `references/java-upgrade-paths.md`: staged Java upgrade rules
 - `references/spring-boot-2-to-3.md`: Spring Boot migration hotspots and remediation order
 - `references/spring-cloud-config-and-bootstrap.md`: Spring Cloud Config and bootstrap/config-data migration rules
@@ -26,9 +27,12 @@ Scan Spring Boot 2.x repositories, identify migration blockers, and drive phased
 3. Propose a phased plan.
 4. Execute a small batch of changes.
 5. Run `verify_repo.py` and fix only the first failed stage before continuing.
+6. If verification is blocked by permissions, dependency access, or local build environment issues, keep applying static migration changes and hand final verification back to the user.
 
 `verify_repo.py` auto-detects Maven or Gradle and provides default `compile` and `test` commands.
 Pass `--startup-command` or `--smoke-command` when the repository has a known runnable entrypoint or smoke probe.
+The skill does not require `rg`; its generated search commands now use `search_repo.py`, which only needs `python3`.
+When verification is environment-blocked, the verifier writes `verification-handoff.md` instead of treating that situation as a source-code migration failure.
 
 ## Agent Prompt Templates
 
@@ -78,11 +82,11 @@ Keep fixing issues until compile, test, and startup are green or clearly blocked
 ```bash
 python3 /path/to/spring-boot-2-to-3-migration/scripts/scan_repo.py /path/to/repo \
   --format both \
-  --output-dir /path/to/repo/.codex/spring-boot-2-to-3-migration
+  --output-dir /path/to/repo/.migration-work/spring-boot-2-to-3
 
 python3 /path/to/spring-boot-2-to-3-migration/scripts/verify_repo.py /path/to/repo \
   --stage all \
-  --output-dir /path/to/repo/.codex/spring-boot-2-to-3-migration
+  --output-dir /path/to/repo/.migration-work/spring-boot-2-to-3
 
 python3 /path/to/spring-boot-2-to-3-migration/scripts/verify_repo.py /path/to/repo \
   --stage startup \
