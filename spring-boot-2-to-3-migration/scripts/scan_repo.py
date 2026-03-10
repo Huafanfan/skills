@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import textwrap
 import xml.etree.ElementTree as ET
@@ -420,6 +421,48 @@ def preferred_gradle_command(root: Path) -> str:
     return "./gradlew" if (root / "gradlew").exists() else "gradle"
 
 
+def build_compile_command(root: Path, build: dict) -> str | None:
+    if build["has_maven"]:
+        wrapper = root / "mvnw"
+        if wrapper.exists() and os.access(wrapper, os.X_OK):
+            return f"{shlex.quote(str(wrapper))} -q -DskipTests compile"
+        pom = root / "pom.xml"
+        return f"mvn -f {shlex.quote(str(pom))} -q -DskipTests compile"
+    if build["has_gradle"]:
+        wrapper = root / "gradlew"
+        if wrapper.exists() and os.access(wrapper, os.X_OK):
+            return f"{shlex.quote(str(wrapper))} compileJava"
+        return f"gradle -p {shlex.quote(str(root))} compileJava"
+    return None
+
+
+def build_test_command(root: Path, build: dict) -> str | None:
+    if build["has_maven"]:
+        wrapper = root / "mvnw"
+        if wrapper.exists() and os.access(wrapper, os.X_OK):
+            return f"{shlex.quote(str(wrapper))} test"
+        pom = root / "pom.xml"
+        return f"mvn -f {shlex.quote(str(pom))} test"
+    if build["has_gradle"]:
+        wrapper = root / "gradlew"
+        if wrapper.exists() and os.access(wrapper, os.X_OK):
+            return f"{shlex.quote(str(wrapper))} test"
+        return f"gradle -p {shlex.quote(str(root))} test"
+    return None
+
+
+def build_openrewrite_command(root: Path, build: dict) -> str | None:
+    if not build["has_maven"]:
+        return None
+    wrapper = root / "mvnw"
+    prefix = shlex.quote(str(wrapper)) if wrapper.exists() and os.access(wrapper, os.X_OK) else f"mvn -f {shlex.quote(str(root / 'pom.xml'))}"
+    return (
+        f"{prefix} org.openrewrite.maven:rewrite-maven-plugin:run "
+        "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:LATEST "
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0"
+    )
+
+
 def build_findings(root: Path, build: dict, text_scan: dict, dep_summary: dict) -> list[dict]:
     findings: list[dict] = []
     stats = text_scan["stats"]
@@ -441,7 +484,10 @@ def build_findings(root: Path, build: dict, text_scan: dict, dep_summary: dict) 
         return findings
 
     if spring_major == 2:
-        detail = "Spring Boot 2.x was detected. Plan a staged upgrade through latest 2.7.x before moving to 3.x."
+        detail = (
+            "Spring Boot 2.x was detected. Plan a staged upgrade through latest 2.7.x before moving to 3.x. "
+            "The 2.7.x step reduces migration risk by surfacing the closest deprecations, property changes, and ecosystem alignment issues before the Boot 3 cutover."
+        )
         if java_major is not None and java_major < 17:
             detail += f" Current detected Java baseline is {java_major}, so Java 17+ must land before the Boot 3 cutover."
         add_finding(findings, "high", "Spring Boot 2.x to 3.x migration required", detail, build["maven_files"] + build["gradle_files"])
@@ -614,7 +660,7 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
                 phase="Phase 0.5",
                 path=path,
                 title="Pin latest Spring Boot 2.7.x before Boot 3",
-                action="Update the Spring Boot parent, plugin, or BOM to the latest 2.7.x patch and get the repository green before attempting the 3.x cutover.",
+                action="Update the Spring Boot parent, plugin, or BOM to the latest 2.7.x patch and get the repository green before attempting the 3.x cutover. This shrinks the migration jump and exposes the closest Boot 2-era deprecations and config changes before Boot 3 lands.",
                 verify="Run compile and tests on the updated 2.7.x baseline.",
                 priority="high",
             )
@@ -791,17 +837,12 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
 
 def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
     commands: list[dict] = []
-    maven = preferred_maven_command(root)
-    gradle = preferred_gradle_command(root)
-    build_cmd = None
-    test_cmd = None
-
-    if build["has_maven"]:
-        build_cmd = f"{maven} -q -DskipTests compile"
-        test_cmd = f"{maven} test"
-    elif build["has_gradle"]:
-        build_cmd = f"{gradle} compileJava"
-        test_cmd = f"{gradle} test"
+    build_cmd = build_compile_command(root, build)
+    test_cmd = build_test_command(root, build)
+    search_script = Path(__file__).resolve().parent / "search_repo.py"
+    verify_script = Path(__file__).resolve().parent / "verify_repo.py"
+    repo_arg = shlex.quote(str(root))
+    gitignore_path = shlex.quote(str(root / ".gitignore"))
 
     def add_command(phase: str, purpose: str, command: str) -> None:
         item = {"phase": phase, "purpose": purpose, "command": command}
@@ -810,9 +851,14 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
 
     def search_command(pattern: str) -> str:
         escaped = pattern.replace('"', '\\"')
-        return f'python3 <skill-dir>/scripts/search_repo.py <repo> --pattern "{escaped}"'
+        return f'python3 {shlex.quote(str(search_script))} {repo_arg} --pattern "{escaped}"'
 
     add_command("Phase 0", "Capture branch and working tree state", "git status --short")
+    add_command(
+        "Phase 0",
+        "Ensure migration workspace is ignored by git",
+        f"grep -qxF '.migration-work/' {gitignore_path} 2>/dev/null || printf '\\n.migration-work/\\n' >> {gitignore_path}",
+    )
     add_command("Phase 0", "Confirm runtime Java", "java -version")
     if build_cmd:
         add_command("Phase 0", "Capture pre-migration compile baseline", build_cmd)
@@ -827,17 +873,15 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
         add_command("Phase 1.5", "Find Spring Cloud config-loading files", search_command(r"spring\.cloud|spring\.config\.import|configserver:|bootstrap"))
 
     if build["has_maven"]:
-        add_command(
-            "Phase 2",
-            "Optional OpenRewrite run for Boot 3 migration",
-            (
-                f"{maven} org.openrewrite.maven:rewrite-maven-plugin:run "
-                "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:LATEST "
-                "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0"
-            ),
-        )
+        rewrite_cmd = build_openrewrite_command(root, build)
+        if rewrite_cmd:
+            add_command("Phase 2", "Optional OpenRewrite run for Boot 3 migration", rewrite_cmd)
     elif build["has_gradle"]:
-        add_command("Phase 2", "Review Gradle dependency alignment", f"{gradle} dependencies")
+        wrapper = root / "gradlew"
+        if wrapper.exists() and os.access(wrapper, os.X_OK):
+            add_command("Phase 2", "Review Gradle dependency alignment", f"{shlex.quote(str(wrapper))} dependencies")
+        else:
+            add_command("Phase 2", "Review Gradle dependency alignment", f"gradle -p {shlex.quote(str(root))} dependencies")
 
     if text_scan["stats"]["configuration_properties"]:
         add_command("Phase 3", "Inspect configuration-properties migration surface", search_command(r"@ConfigurationProperties|@ConstructorBinding"))
@@ -853,7 +897,10 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
     add_command(
         "Phase 4",
         "Run verification with captured logs",
-        "python3 <skill-dir>/scripts/verify_repo.py <repo> --stage all --output-dir <repo>/.migration-work/spring-boot-2-to-3",
+        (
+            f"python3 {shlex.quote(str(verify_script))} {repo_arg} --stage all "
+            f"--output-dir {shlex.quote(str(root / '.migration-work' / 'spring-boot-2-to-3'))}"
+        ),
     )
 
     return commands
@@ -872,7 +919,7 @@ def recommended_references(findings: list[dict], build: dict) -> list[str]:
 
 def phase_plan(findings: list[dict], build: dict) -> list[str]:
     steps = [
-        "Phase 0: capture baseline build, tests, runtime entrypoint, and create a migration branch.",
+        "Phase 0: capture baseline build, tests, runtime entrypoint, and working tree state.",
         "Phase 1: align Java toolchain, wrapper, plugins, and CI runtime.",
         "Phase 2: align framework and library versions before code edits.",
         "Phase 3: apply source and configuration changes driven by scan findings.",

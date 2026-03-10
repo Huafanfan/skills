@@ -13,6 +13,14 @@ Use this skill to make Spring Boot 2.x to 3.x migration start from repository fa
 
 Never migrate blindly.
 
+Before writing scan or verification outputs into the repository, ensure the target repository `.gitignore` contains:
+
+```gitignore
+.migration-work/
+```
+
+Do this early so migration artifacts are not committed by accident.
+
 Run:
 
 ```bash
@@ -40,6 +48,7 @@ If `rg` is installed, you can still use it manually for faster ad hoc searches.
 
 ### 2. Load Only The Needed References
 
+- First load the files listed under `Recommended References` in `scan.md`.
 - Always load `references/verification.md`.
 - Load `references/java-upgrade-paths.md` when the repo needs a Java major-version upgrade.
 - Load `references/spring-boot-2-to-3.md` when Spring Boot 2.x, Jakarta migration, old Spring Security DSL, or custom auto-configuration is detected.
@@ -64,26 +73,39 @@ Use `assets/migration-plan-template.md` when you need a starting structure.
 
 Default phases:
 
-1. Baseline current build, tests, runtime entrypoint, and create a branch
+1. Baseline current build, tests, runtime entrypoint, and working tree state
 2. Raise Java toolchain and build infrastructure
 3. Align Spring and third-party dependency versions
 4. Apply source and configuration changes
 5. Compile, test, start the app, and smoke critical flows
 
 If Spring Boot 2.x is detected, insert an intermediate step to move to the latest 2.7.x patch before the Boot 3 upgrade.
+This is not busywork: 2.7.x is the last Spring Boot 2 line, surfaces the closest set of deprecations and config changes, and reduces the jump size before Jakarta, Security 6, and Boot 3 behavior changes land together.
 
 ### 5. Verification And Repair Loop
 
 After each meaningful batch of edits, run verification instead of guessing.
 
+A meaningful batch is intentionally small:
+
+- one blocker type at a time
+- or at most three files from the same blocker category
+- do not mix dependency alignment, Jakarta edits, Spring Security rewrites, and config migration in one batch
+
 Default verification loop:
 
 1. Run compile verification.
 2. If compile passes, run test verification.
-3. If a startup command is known, run startup verification.
-4. If a smoke command is known, run smoke verification.
+3. If a startup command is known, run startup verification. If it is unknown, mark startup as not configured and do not guess.
+4. If a smoke command is known, run smoke verification. If it is unknown, mark smoke as not configured and do not guess.
 5. If a code or configuration stage fails, stop, read `failure-summary.md`, fix the first failed stage, and rerun that stage before moving forward.
 6. If verification is blocked by environment, permissions, wrapper state, or dependency access, write the handoff, skip the remaining verification steps, and continue static migration work where possible.
+
+State machine:
+
+- `passed`: move to the next phase
+- `failed`: stay in the current phase and fix only the first root-cause error
+- `blocked`: continue static migration work, but final status must be a handoff, not success
 
 Run:
 
@@ -110,6 +132,8 @@ If the verifier produces a handoff instead of a failure summary, continue source
 - Treat `spring.factories`, starter modules, and custom auto-configuration as bean-loading risks that need manual review.
 - Treat JPA usage as a Hibernate 6 review surface, not only an import-rename task.
 - Prefer removing root causes over adding blanket JVM flags.
+- Do not guess startup commands, smoke commands, HTTP endpoints, or deployment topology.
+- Do not start the next phase while the current phase is still `failed`.
 
 ### 7. Verification Contract
 

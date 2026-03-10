@@ -22,17 +22,25 @@ Scan Spring Boot 2.x repositories, identify migration blockers, and drive phased
 
 ## Typical Usage
 
+Before writing scan or verification outputs into a target repository, add `.migration-work/` to that repository's `.gitignore`.
+
 1. Run the scanner against the target repository.
 2. Read `scan.md` for the high-level picture and `todo.md` for the file-by-file execution list.
-3. Propose a phased plan.
-4. Execute a small batch of changes.
-5. Run `verify_repo.py` and fix only the first failed stage before continuing.
-6. If verification is blocked by permissions, dependency access, or local build environment issues, keep applying static migration changes and hand final verification back to the user.
+3. Load only the reference files listed under `Recommended References` in `scan.md`.
+4. Propose a phased plan.
+5. Execute a small batch of changes.
+6. Run `verify_repo.py` and fix only the first failed stage before continuing.
+7. If verification is blocked by permissions, dependency access, or local build environment issues, keep applying static migration changes and hand final verification back to the user.
 
 `verify_repo.py` auto-detects Maven or Gradle and provides default `compile` and `test` commands.
 Pass `--startup-command` or `--smoke-command` when the repository has a known runnable entrypoint or smoke probe.
 The skill does not require `rg`; its generated search commands now use `search_repo.py`, which only needs `python3`.
 When verification is environment-blocked, the verifier writes `verification-handoff.md` instead of treating that situation as a source-code migration failure.
+Do not guess startup commands, smoke commands, or endpoints. If they are unknown, leave them unconfigured.
+Keep each edit batch narrow: one blocker type at a time, or at most three files from the same blocker category.
+
+The intermediate Spring Boot `2.7.x` step is intentional.
+It is the last Boot 2 line, exposes the closest compatible deprecations and property changes, and makes the final jump to Boot 3 materially safer than jumping from older 2.x baselines.
 
 ## Agent Prompt Templates
 
@@ -58,6 +66,7 @@ Scan first, generate the migration TODO, then start applying changes phase by ph
 Use $spring-boot-2-to-3-migration to migrate this repository to Spring Boot 3.x.
 After each batch of changes, run verification.
 If compile, test, or startup fails, read failure-summary.md and continue fixing the first failed stage until it passes or you hit a real blocker.
+If verification is blocked by permissions or dependency access, continue static migration work and leave a verification handoff instead of declaring success.
 ```
 
 ### Conservative Review-First Mode

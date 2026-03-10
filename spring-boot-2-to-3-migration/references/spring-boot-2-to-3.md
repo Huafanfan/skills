@@ -8,6 +8,13 @@ Use this file when the scan detects Spring Boot 2.x, Jakarta-related imports, Sp
 - Require Java 17+ before the Spring Boot 3 cutover.
 - Do not rename `javax.*` blindly. Only Jakarta EE packages move; JDK `javax.*` packages like `javax.crypto` and `javax.sql` do not.
 - Treat custom starters, `spring.factories`, and security configuration as high-risk migration areas.
+- Add `.migration-work/` to the target repository `.gitignore` before writing migration artifacts under that directory.
+
+Why 2.7.x first:
+
+- it is the last Spring Boot 2 line and the closest supported baseline before Boot 3
+- it surfaces deprecations, property changes, and ecosystem alignment issues earlier
+- it reduces the number of variables that change at once when Jakarta, Security 6, and Boot 3 behavior changes land
 
 ## Hotspots
 
