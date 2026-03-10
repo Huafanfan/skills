@@ -1,0 +1,7 @@
+interface:
+  display_name: "Spring Boot 2 to 3 Migration"
+  short_description: "Scan and migrate Spring Boot 2.x"
+  default_prompt: "Use $spring-boot-2-to-3-migration to scan this Spring Boot 2.x repository, identify migration blockers, execute a phased upgrade to Spring Boot 3.x, and keep iterating through verification failures until compile, tests, and startup are green or clearly blocked."
+
+policy:
+  allow_implicit_invocation: true
