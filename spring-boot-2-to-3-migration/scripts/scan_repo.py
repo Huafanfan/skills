@@ -126,8 +126,14 @@ def parse_pom(path: Path, root: Path) -> dict:
         "path": rel(path, root),
         "java_version": None,
         "spring_boot_version": None,
+        "spring_boot_version_source": None,
         "spring_cloud_version": None,
         "dependencies": [],
+        "parent_group_id": None,
+        "parent_artifact_id": None,
+        "parent_version": None,
+        "parent_relative_path": None,
+        "declares_spring_boot_usage": False,
     }
     try:
         tree = ET.parse(path)
@@ -146,6 +152,7 @@ def parse_pom(path: Path, root: Path) -> dict:
         for key in ("spring-boot.version", "spring.boot.version", "version.spring.boot"):
             if properties.get(key):
                 result["spring_boot_version"] = properties[key]
+                result["spring_boot_version_source"] = "property"
                 break
         for key in ("spring-cloud.version", "version.spring.cloud", "version.spring.cloud.config"):
             if properties.get(key):
@@ -158,8 +165,14 @@ def parse_pom(path: Path, root: Path) -> dict:
         group_id = child_text(parent, "groupId", namespace)
         artifact_id = child_text(parent, "artifactId", namespace)
         version = resolve_property(child_text(parent, "version", namespace), properties)
+        result["parent_group_id"] = group_id
+        result["parent_artifact_id"] = artifact_id
+        result["parent_version"] = version
+        result["parent_relative_path"] = child_text(parent, "relativePath", namespace)
         if group_id == "org.springframework.boot" and artifact_id == "spring-boot-starter-parent":
             result["spring_boot_version"] = version
+            result["spring_boot_version_source"] = "boot_parent"
+            result["declares_spring_boot_usage"] = True
 
     dependency_name = f".//{{{namespace}}}dependency" if namespace else ".//dependency"
     for dependency in project.findall(dependency_name):
@@ -167,6 +180,8 @@ def parse_pom(path: Path, root: Path) -> dict:
         artifact_id = child_text(dependency, "artifactId", namespace) or ""
         version = resolve_property(child_text(dependency, "version", namespace), properties)
         if group_id and artifact_id:
+            if group_id == "org.springframework.boot" or artifact_id.startswith("spring-boot"):
+                result["declares_spring_boot_usage"] = True
             result["dependencies"].append(
                 {
                     "group_id": group_id,
@@ -176,6 +191,7 @@ def parse_pom(path: Path, root: Path) -> dict:
             )
             if artifact_id == "spring-boot-dependencies" and group_id == "org.springframework.boot" and version:
                 result["spring_boot_version"] = version
+                result["spring_boot_version_source"] = "boot_bom"
             if artifact_id.startswith("spring-cloud-") and group_id == "org.springframework.cloud" and version:
                 result["spring_cloud_version"] = version
     return result
@@ -187,7 +203,11 @@ def parse_gradle(path: Path, root: Path) -> dict:
         "path": rel(path, root),
         "java_version": None,
         "spring_boot_version": None,
+        "spring_boot_version_source": None,
+        "declares_spring_boot_usage": False,
     }
+    if "org.springframework.boot" in text or "spring-boot-starter" in text:
+        result["declares_spring_boot_usage"] = True
     patterns = [
         r'id\(["\']org\.springframework\.boot["\']\)\s+version\s+["\']([^"\']+)["\']',
         r'id\s+["\']org\.springframework\.boot["\']\s+version\s+["\']([^"\']+)["\']',
@@ -197,6 +217,7 @@ def parse_gradle(path: Path, root: Path) -> dict:
         match = re.search(pattern, text)
         if match:
             result["spring_boot_version"] = match.group(1)
+            result["spring_boot_version_source"] = "gradle_plugin"
             break
     java_patterns = [
         r'JavaLanguageVersion\.of\((\d+)\)',
@@ -234,6 +255,101 @@ def prefer_concrete_versions(versions: list[str]) -> list[str]:
     concrete = [value for value in versions if not value.startswith("${")]
     chosen = concrete or versions
     return sorted(set(chosen))
+
+
+def resolve_local_parent_path(model: dict, root: Path) -> Path | None:
+    if not model.get("parent_group_id") or not model.get("parent_artifact_id"):
+        return None
+    relative_path = model.get("parent_relative_path")
+    if relative_path == "":
+        return None
+    base_dir = (root / model["path"]).resolve().parent
+    candidate = (base_dir / (relative_path or "../pom.xml")).resolve()
+    if not candidate.exists():
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def resolve_boot_via_local_parent(model: dict, root: Path, models_by_abs_path: dict[Path, dict], visited: set[Path] | None = None) -> tuple[str | None, str | None]:
+    visited = visited or set()
+    parent_path = resolve_local_parent_path(model, root)
+    if not parent_path or parent_path in visited:
+        return (None, None)
+    visited.add(parent_path)
+    parent_model = models_by_abs_path.get(parent_path)
+    if not parent_model:
+        return (None, None)
+    if parent_model.get("spring_boot_version"):
+        return (parent_model["spring_boot_version"], parent_model["path"])
+    return resolve_boot_via_local_parent(parent_model, root, models_by_abs_path, visited)
+
+
+def classify_support_status(root: Path, maven_models: list[dict], gradle_models: list[dict]) -> tuple[str, str, list[str], list[str]]:
+    direct_evidence: list[str] = []
+    local_parent_evidence: list[str] = []
+    blocked_evidence: list[str] = []
+    resolved_versions: list[str] = []
+
+    models_by_abs_path = {(root / model["path"]).resolve(): model for model in maven_models}
+
+    for model in maven_models:
+        direct_version = model.get("spring_boot_version")
+        if direct_version and not direct_version.startswith("${"):
+            resolved_versions.append(direct_version)
+            if model.get("declares_spring_boot_usage") or model.get("spring_boot_version_source"):
+                direct_evidence.append(model["path"])
+            continue
+
+        local_version, parent_path = resolve_boot_via_local_parent(model, root, models_by_abs_path)
+        if local_version:
+            resolved_versions.append(local_version)
+            if model.get("declares_spring_boot_usage"):
+                local_parent_evidence.append(model["path"])
+            model["resolved_spring_boot_version"] = local_version
+            model["resolved_spring_boot_source_path"] = parent_path
+            continue
+
+        if model.get("declares_spring_boot_usage"):
+            blocked_evidence.append(model["path"])
+
+    for model in gradle_models:
+        direct_version = model.get("spring_boot_version")
+        if direct_version and not direct_version.startswith("${"):
+            resolved_versions.append(direct_version)
+            if model.get("declares_spring_boot_usage"):
+                direct_evidence.append(model["path"])
+
+    if blocked_evidence:
+        return (
+            "blocked_by_external_parent",
+            "Spring Boot usage was detected, but the effective Boot version is controlled outside the current repository through an external parent or BOM that cannot be resolved here.",
+            sorted(set(blocked_evidence)),
+            prefer_concrete_versions(resolved_versions),
+        )
+    if local_parent_evidence:
+        return (
+            "supported_via_local_parent",
+            "Spring Boot versioning is inherited through a parent POM that exists inside the current repository, so the skill can continue after resolving that local parent chain.",
+            sorted(set(local_parent_evidence)),
+            prefer_concrete_versions(resolved_versions),
+        )
+    if direct_evidence:
+        return (
+            "directly_supported",
+            "Spring Boot versioning is managed directly by the current repository build files.",
+            sorted(set(direct_evidence)),
+            prefer_concrete_versions(resolved_versions),
+        )
+    return (
+        "not_applicable",
+        "No directly supported Spring Boot version management was detected in the current repository.",
+        [],
+        prefer_concrete_versions(resolved_versions),
+    )
 
 
 def scan_text_files(root: Path) -> dict:
@@ -324,9 +440,10 @@ def detect_build(root: Path) -> dict:
     gradle_files = find_files(root, names=["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "libs.versions.toml"])
     maven_models = [parse_pom(path, root) for path in poms]
     gradle_models = [parse_gradle(path, root) for path in gradle_files if path.name in {"build.gradle", "build.gradle.kts"}]
+    support_status, support_reason, support_evidence, resolved_boot_versions = classify_support_status(root, maven_models, gradle_models)
 
     java_versions = [model["java_version"] for model in maven_models + gradle_models if model["java_version"]]
-    spring_versions = [model["spring_boot_version"] for model in maven_models + gradle_models if model["spring_boot_version"]]
+    spring_versions = resolved_boot_versions
     spring_cloud_versions = [model["spring_cloud_version"] for model in maven_models if model["spring_cloud_version"]]
 
     dependencies = []
@@ -341,6 +458,9 @@ def detect_build(root: Path) -> dict:
         "spring_boot_versions": prefer_concrete_versions(spring_versions),
         "spring_cloud_versions": prefer_concrete_versions(spring_cloud_versions),
         "dependencies": dependencies,
+        "support_status": support_status,
+        "support_reason": support_reason,
+        "support_evidence": support_evidence,
     }
 
 
@@ -421,12 +541,21 @@ def preferred_gradle_command(root: Path) -> str:
     return "./gradlew" if (root / "gradlew").exists() else "gradle"
 
 
+def preferred_pom_path(root: Path, build: dict) -> Path:
+    root_pom = root / "pom.xml"
+    if root_pom.exists():
+        return root_pom
+    if build["maven_files"]:
+        return root / build["maven_files"][0]
+    return root_pom
+
+
 def build_compile_command(root: Path, build: dict) -> str | None:
     if build["has_maven"]:
         wrapper = root / "mvnw"
         if wrapper.exists() and os.access(wrapper, os.X_OK):
             return f"{shlex.quote(str(wrapper))} -q -DskipTests compile"
-        pom = root / "pom.xml"
+        pom = preferred_pom_path(root, build)
         return f"mvn -f {shlex.quote(str(pom))} -q -DskipTests compile"
     if build["has_gradle"]:
         wrapper = root / "gradlew"
@@ -441,7 +570,7 @@ def build_test_command(root: Path, build: dict) -> str | None:
         wrapper = root / "mvnw"
         if wrapper.exists() and os.access(wrapper, os.X_OK):
             return f"{shlex.quote(str(wrapper))} test"
-        pom = root / "pom.xml"
+        pom = preferred_pom_path(root, build)
         return f"mvn -f {shlex.quote(str(pom))} test"
     if build["has_gradle"]:
         wrapper = root / "gradlew"
@@ -455,7 +584,7 @@ def build_openrewrite_command(root: Path, build: dict) -> str | None:
     if not build["has_maven"]:
         return None
     wrapper = root / "mvnw"
-    prefix = shlex.quote(str(wrapper)) if wrapper.exists() and os.access(wrapper, os.X_OK) else f"mvn -f {shlex.quote(str(root / 'pom.xml'))}"
+    prefix = shlex.quote(str(wrapper)) if wrapper.exists() and os.access(wrapper, os.X_OK) else f"mvn -f {shlex.quote(str(preferred_pom_path(root, build)))}"
     return (
         f"{prefix} org.openrewrite.maven:rewrite-maven-plugin:run "
         "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:LATEST "
@@ -480,6 +609,19 @@ def build_findings(root: Path, build: dict, text_scan: dict, dep_summary: dict) 
             "No supported Java build file detected",
             "The repository does not expose pom.xml or build.gradle at the scanned paths. Migration can continue only after locating the real build entrypoint.",
             [],
+        )
+        return findings
+
+    if build["support_status"] == "blocked_by_external_parent":
+        add_finding(
+            findings,
+            "high",
+            "Spring Boot version is controlled outside this repository",
+            (
+                f"{build['support_reason']} Stop migration work here, explain the limitation to the user, "
+                "and ask for the external parent or BOM context, an effective POM, or a repository checkout that includes the version-managing build files."
+            ),
+            build["support_evidence"] or build["maven_files"] or build["gradle_files"],
         )
         return findings
 
@@ -652,6 +794,18 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
     java_values = [java_major_version(value) for value in build["java_versions"]]
     java_major = min([value for value in java_values if value is not None], default=None)
     build_files = build["maven_files"] + build["gradle_files"]
+
+    if build["support_status"] == "blocked_by_external_parent":
+        add_todo(
+            todos,
+            phase="Phase 0",
+            path=build["support_evidence"][0] if build["support_evidence"] else (build_files[0] if build_files else "."),
+            title="Stop and collect external parent or BOM context",
+            action="Do not continue the migration in this checkout. Explain that the effective Spring Boot version is inherited from a parent or BOM outside the repository and ask the user for the parent repository, the effective POM, or a checkout that includes the version-managing build files.",
+            verify="Resume only after the effective Spring Boot baseline is visible inside the working repository context.",
+            priority="high",
+        )
+        return todos
 
     if spring_major == 2:
         for path in build_files:
@@ -837,9 +991,18 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
 
 def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
     commands: list[dict] = []
+    if build["support_status"] == "blocked_by_external_parent":
+        return [
+            {
+                "phase": "Phase 0",
+                "purpose": "Stop and explain the external parent or BOM limitation",
+                "command": "Stop migration work. Ask the user for the external parent repository, an effective POM, or a checkout that includes the build file that manages Spring Boot versions.",
+            }
+        ]
     build_cmd = build_compile_command(root, build)
     test_cmd = build_test_command(root, build)
     search_script = Path(__file__).resolve().parent / "search_repo.py"
+    probe_script = Path(__file__).resolve().parent / "probe_versions.py"
     verify_script = Path(__file__).resolve().parent / "verify_repo.py"
     repo_arg = shlex.quote(str(root))
     gitignore_path = shlex.quote(str(root / ".gitignore"))
@@ -876,6 +1039,14 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
         rewrite_cmd = build_openrewrite_command(root, build)
         if rewrite_cmd:
             add_command("Phase 2", "Optional OpenRewrite run for Boot 3 migration", rewrite_cmd)
+        add_command(
+            "Phase 2",
+            "Probe Maven anchor versions if repository gateway rejects a version",
+            (
+                f"python3 {shlex.quote(str(probe_script))} {repo_arg} "
+                f"--output-dir {shlex.quote(str(root / '.migration-work' / 'spring-boot-2-to-3'))}"
+            ),
+        )
     elif build["has_gradle"]:
         wrapper = root / "gradlew"
         if wrapper.exists() and os.access(wrapper, os.X_OK):
@@ -908,6 +1079,8 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
 
 def recommended_references(findings: list[dict], build: dict) -> list[str]:
     refs = ["references/verification.md"]
+    if build["support_status"] == "blocked_by_external_parent":
+        return refs
     spring_versions = build["spring_boot_versions"]
     if spring_versions and major_version(spring_versions[0]) == 2:
         refs.append("references/spring-boot-2-to-3.md")
@@ -918,6 +1091,11 @@ def recommended_references(findings: list[dict], build: dict) -> list[str]:
 
 
 def phase_plan(findings: list[dict], build: dict) -> list[str]:
+    if build["support_status"] == "blocked_by_external_parent":
+        return [
+            "Phase 0: stop migration work because the effective Spring Boot version is inherited from a parent or BOM outside the current repository.",
+            "Phase 1: ask the user for the external parent repository, effective POM, or a checkout that includes the version-managing build files before resuming.",
+        ]
     steps = [
         "Phase 0: capture baseline build, tests, runtime entrypoint, and working tree state.",
         "Phase 1: align Java toolchain, wrapper, plugins, and CI runtime.",
@@ -987,6 +1165,8 @@ def findings_to_markdown(report: dict) -> str:
         f"- Repository: `{report['repository']}`",
         f"- Maven detected: `{'yes' if build['has_maven'] else 'no'}`",
         f"- Gradle detected: `{'yes' if build['has_gradle'] else 'no'}`",
+        f"- Support status: `{build['support_status']}`",
+        f"- Support reason: {build['support_reason']}",
         f"- Java versions: `{', '.join(build['java_versions']) if build['java_versions'] else 'unknown'}`",
         f"- Spring Boot versions: `{', '.join(build['spring_boot_versions']) if build['spring_boot_versions'] else 'none detected'}`",
         f"- Spring Cloud versions: `{', '.join(build['spring_cloud_versions']) if build['spring_cloud_versions'] else 'none detected'}`",

@@ -2,6 +2,9 @@
 
 Use this file when the scan detects Spring Boot 2.x, Jakarta-related imports, Spring Security 5-era APIs, or custom auto-configuration.
 
+Do not use this file to continue migration when scan support status is `blocked_by_external_parent`.
+In that case the effective Boot version is not visible inside the current repository and the migration should stop until the missing parent or BOM context is available.
+
 ## Non-Negotiable Rules
 
 - Upgrade to the latest Spring Boot 2.7.x patch before moving to 3.x.
@@ -9,6 +12,7 @@ Use this file when the scan detects Spring Boot 2.x, Jakarta-related imports, Sp
 - Do not rename `javax.*` blindly. Only Jakarta EE packages move; JDK `javax.*` packages like `javax.crypto` and `javax.sql` do not.
 - Treat custom starters, `spring.factories`, and security configuration as high-risk migration areas.
 - Add `.migration-work/` to the target repository `.gitignore` before writing migration artifacts under that directory.
+- If a build failure falls outside the hotspots in this file, keep debugging the first root cause and log any out-of-skill fixes or residual risk in `.migration-work/spring-boot-2-to-3/risk-register.md`.
 
 Why 2.7.x first:
 

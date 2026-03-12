@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -14,8 +15,8 @@ from pathlib import Path
 
 BLOCKED_CATEGORIES = {
     "build_environment",
+    "repository_access",
     "build_wrapper",
-    "dependency_resolution",
 }
 
 
@@ -116,13 +117,19 @@ def classify_failure(output: str) -> tuple[str, str]:
     ):
         return ("build_environment", "Build cache or local tool state is not writable in the current environment.")
     if (
+        "unknown host" in text
+        or "connect timed out" in text
+        or "connection refused" in text
+        or "unauthorized" in text
+        or " 401 " in text
+        or "certificate" in text and "failed" in text
+    ):
+        return ("repository_access", "Repository access itself failed because of network, certificate, or authentication issues.")
+    if (
         "could not resolve" in text
         or "could not find artifact" in text
         or "failed to read artifact descriptor" in text
         or "pluginresolutionexception" in text
-        or "unknown host" in text
-        or "connect timed out" in text
-        or "connection refused" in text
     ):
         return ("dependency_resolution", "Dependency or plugin resolution failed before the code could be fully verified.")
     if (
@@ -184,8 +191,8 @@ def classify_failure(output: str) -> tuple[str, str]:
 def suggested_repairs(category: str) -> list[str]:
     suggestions = {
         "dependency_resolution": [
-            "Check whether the repository requires network access, private artifact credentials, or a wrapper/bootstrap update.",
-            "Fix the dependency resolution issue before changing source code again.",
+            "Probe Maven anchor artifacts for visible and downloadable versions before declaring the repository blocked.",
+            "Update the version-managing build file to the first downloadable candidate and rerun the failed stage.",
         ],
         "build_wrapper": [
             "Restore executable permissions on `mvnw` or `gradlew`, or use the system Maven or Gradle command if that is the repository standard.",
@@ -194,6 +201,10 @@ def suggested_repairs(category: str) -> list[str]:
         "build_environment": [
             "Fix local Maven or Gradle cache permissions, or rerun in an environment where the build tool can write its local state.",
             "Do not treat this as a source-code regression until the build environment is usable.",
+        ],
+        "repository_access": [
+            "Fix repository reachability, certificate trust, or credentials before retrying dependency resolution.",
+            "Do not probe alternate versions until repository access itself is healthy.",
         ],
         "jakarta_namespace": [
             "Fix the first missing `javax` or `jakarta` import and align the matching dependency.",
@@ -233,6 +244,77 @@ def suggested_repairs(category: str) -> list[str]:
         ],
     }
     return suggestions.get(category, suggestions["unknown"])
+
+
+def extract_artifact_specs(output: str) -> list[str]:
+    specs: list[str] = []
+    patterns = [
+        r"Could not find artifact\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
+        r"artifact\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
+        r"for artifact\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, output):
+            group_id, artifact_id, packaging, version = match.groups()
+            spec = f"{group_id}:{artifact_id}:{packaging}@{version}"
+            if spec not in specs:
+                specs.append(spec)
+    return specs[:6]
+
+
+def run_dependency_probe(root: Path, output_dir: Path | None, output: str, timeout_seconds: int) -> dict | None:
+    script = Path(__file__).resolve().parent / "probe_versions.py"
+    command = ["python3", str(script), str(root), "--format", "json", "--max-probe-count", "12"]
+    for artifact in extract_artifact_specs(output):
+        command.extend(["--artifact", artifact])
+    if output_dir:
+        command[4] = "both"
+        command.extend(["--output-dir", str(output_dir)])
+    completed = subprocess.run(
+        command,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=min(timeout_seconds, 300),
+    )
+    probe_output = completed.stdout or ""
+    if output_dir:
+        report_path = output_dir / "version-probe.json"
+        if report_path.exists():
+            try:
+                return json.loads(report_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+    try:
+        return json.loads(probe_output)
+    except json.JSONDecodeError:
+        return None
+
+
+def summarize_dependency_probe(probe_report: dict) -> tuple[str, list[str]]:
+    downloadable: list[str] = []
+    attempted: list[str] = []
+    for artifact in probe_report.get("artifacts", []):
+        coordinate = f"{artifact['group_id']}:{artifact['artifact_id']}"
+        first = artifact.get("first_downloadable_version")
+        if first:
+            downloadable.append(f"{coordinate}:{first}")
+        attempted.extend(
+            [
+                f"{coordinate}:{attempt['version']}={attempt['status']}"
+                for attempt in artifact.get("probed_versions", [])[:5]
+            ]
+        )
+    if downloadable:
+        return (
+            "Dependency resolution failed, but downloadable replacement versions were found. Update the version-managing build files to one of the probe results and rerun verification.",
+            downloadable + attempted,
+        )
+    return (
+        "Dependency resolution failed and no downloadable candidate was found among the visible versions that were probed.",
+        attempted,
+    )
 
 
 def run_command(root: Path, command: str, timeout_seconds: int) -> tuple[int, str, float, bool]:
@@ -296,6 +378,7 @@ def build_report(
             "rerun_command": first_non_passed["command"],
             "suggested_repairs": suggested_repairs(first_non_passed["category"]),
             "log_path": first_non_passed["log_path"],
+            "dependency_probe": first_non_passed.get("dependency_probe"),
         }
     if first_non_passed and first_non_passed["status"] == "blocked":
         report["verification_handoff"] = {
@@ -334,6 +417,14 @@ def report_to_markdown(report: dict) -> str:
             lines.append(f"   - Summary: {result['summary']}")
             if result["key_lines"]:
                 lines.append(f"   - Key lines: {' | '.join(result['key_lines'])}")
+            if result.get("dependency_probe"):
+                downloadable = [
+                    f"{item['group_id']}:{item['artifact_id']}:{item['first_downloadable_version']}"
+                    for item in result["dependency_probe"].get("artifacts", [])
+                    if item.get("first_downloadable_version")
+                ]
+                if downloadable:
+                    lines.append(f"   - Downloadable candidates: {' | '.join(downloadable)}")
     if "verification_handoff" in report:
         handoff = report["verification_handoff"]
         lines.extend(
@@ -423,6 +514,18 @@ def failure_to_markdown(report: dict) -> str:
     )
     for item in failure["suggested_repairs"]:
         lines.append(f"- {item}")
+    if failure.get("dependency_probe"):
+        lines.extend(
+            [
+                "",
+                "## Version Probe",
+                "",
+            ]
+        )
+        for artifact in failure["dependency_probe"].get("artifacts", []):
+            coordinate = f"{artifact['group_id']}:{artifact['artifact_id']}"
+            lines.append(f"- `{coordinate}` visible versions: `{', '.join(artifact['visible_versions']) if artifact['visible_versions'] else 'none found'}`")
+            lines.append(f"- `{coordinate}` first downloadable: `{artifact['first_downloadable_version'] or 'none found'}`")
     return "\n".join(lines) + "\n"
 
 
@@ -589,11 +692,17 @@ def main() -> int:
         status = "passed" if exit_code == 0 else "failed"
         category, summary = ("none", "Verification stage passed.")
         key_lines: list[str] = []
+        dependency_probe = None
         if status != "passed":
             category, summary = classify_failure(output)
             if category in BLOCKED_CATEGORIES:
                 status = "blocked"
             key_lines = extract_key_lines(output)
+            if category == "dependency_resolution" and build_tool == "maven":
+                dependency_probe = run_dependency_probe(root, output_dir, output, args.timeout_seconds)
+                if dependency_probe:
+                    summary, probe_lines = summarize_dependency_probe(dependency_probe)
+                    key_lines = probe_lines[:12] or key_lines
 
         log_path = ""
         if logs_dir:
@@ -612,6 +721,7 @@ def main() -> int:
                 "category": category,
                 "summary": summary,
                 "key_lines": key_lines,
+                "dependency_probe": dependency_probe,
             }
         )
         if status != "passed":

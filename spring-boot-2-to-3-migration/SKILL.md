@@ -33,6 +33,14 @@ Read `<repo>/.migration-work/spring-boot-2-to-3/scan.md` first for the high-leve
 Read `<repo>/.migration-work/spring-boot-2-to-3/todo.md` next for the file-by-file execution list.
 Use `scan.json` and `todo.json` only when you need structured fields.
 
+The scan classifies repository support into three states:
+
+- `directly_supported`: Spring Boot versioning is managed directly in the current repository build files.
+- `supported_via_local_parent`: the current module inherits Spring Boot versioning through a parent POM that also exists inside the current repository.
+- `blocked_by_external_parent`: Spring Boot usage exists, but the effective Boot version is inherited from a parent or BOM outside the current repository.
+
+If the state is `blocked_by_external_parent`, stop migration work, explain the limitation, and ask the user for the external parent repository, effective POM, or a checkout that includes the version-managing build files.
+
 The scanner detects:
 
 - Maven and Gradle entrypoints
@@ -68,6 +76,7 @@ After scanning, use the generated outputs and respond with these sections in thi
 6. Verification status
 
 Use `assets/migration-plan-template.md` when you need a starting structure.
+If support status is `blocked_by_external_parent`, the plan must stop after explaining the limitation and required user input.
 
 ### 4. Execute In Phases
 
@@ -101,11 +110,27 @@ Default verification loop:
 5. If a code or configuration stage fails, stop, read `failure-summary.md`, fix the first failed stage, and rerun that stage before moving forward.
 6. If verification is blocked by environment, permissions, wrapper state, or dependency access, write the handoff, skip the remaining verification steps, and continue static migration work where possible.
 
+Special rule for Maven dependency resolution failures:
+
+- Do not immediately mark the repository blocked when the build tool can still reach Nexus or the repository manager.
+- Run `scripts/probe_versions.py` to collect visible versions for Spring Boot or Spring Cloud anchor artifacts and probe them until a downloadable candidate is found.
+- Update the version-managing build file to the first downloadable candidate and rerun the failed stage.
+- Only treat the repository as blocked when repository access itself is broken, local cache state is unusable, or no relevant candidate can be probed at all.
+
 State machine:
 
 - `passed`: move to the next phase
 - `failed`: stay in the current phase and fix only the first root-cause error
 - `blocked`: continue static migration work, but final status must be a handoff, not success
+
+Fallback rule for uncovered build and runtime failures:
+
+- If the error is not explicitly covered by this skill, do not stop just because no rule matched.
+- Continue with normal debugging using the repository context, logs, and failing tests.
+- Prefer the smallest defensible fix for the first root-cause error.
+- Create or update `.migration-work/spring-boot-2-to-3/risk-register.md` from `assets/risk-register-template.md`.
+- Record every material out-of-skill fix attempt and unresolved risk in that file.
+- If the issue remains unresolved, report the attempted fixes, the remaining risk, and why the user may need to take over.
 
 Run:
 
@@ -120,7 +145,10 @@ The verifier writes:
 - `verification.md` and `verification.json`
 - `failure-summary.md` and `failure-summary.json` when a stage fails
 - `verification-handoff.md` and `verification-handoff.json` when verification is blocked by environment or permissions
+- `version-probe.md` and `version-probe.json` when Maven dependency resolution failures trigger artifact version probing
 - `logs/*.log` for the raw command output
+
+The agent must create and maintain `risk-register.md` when it goes beyond the explicit skill rules or leaves residual risk behind.
 
 Do not dump raw Maven or Gradle logs back to the user when the verifier already extracted the root cause. Use the summary, fix the first failure, and rerun.
 If the verifier produces a handoff instead of a failure summary, continue source-level migration work and report that final verification must be rerun by the user in a permitted environment.
@@ -168,8 +196,10 @@ python3 <skill-dir>/scripts/verify_repo.py <repo> --stage startup --startup-comm
 - `scripts/scan_repo.py`
 - `scripts/search_repo.py`
 - `scripts/verify_repo.py`
+- `scripts/probe_versions.py`
 - `references/java-upgrade-paths.md`
 - `references/spring-boot-2-to-3.md`
 - `references/verification.md`
 - `references/spring-cloud-config-and-bootstrap.md`
 - `assets/migration-plan-template.md`
+- `assets/risk-register-template.md`
