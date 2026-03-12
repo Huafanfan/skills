@@ -13,6 +13,7 @@ In that case the effective Boot version is not visible inside the current reposi
 - Treat custom starters, `spring.factories`, and security configuration as high-risk migration areas.
 - Add `.migration-work/` to the target repository `.gitignore` before writing migration artifacts under that directory.
 - If a build failure falls outside the hotspots in this file, keep debugging the first root cause and log any out-of-skill fixes or residual risk in `.migration-work/spring-boot-2-to-3/risk-register.md`.
+- Do not create new environment-specific config files or Java configuration classes unless the existing repository structure proves they are required.
 
 Why 2.7.x first:
 
@@ -50,6 +51,7 @@ Expected remediation:
 - replace `WebSecurityConfigurerAdapter` with `SecurityFilterChain`
 - replace matcher APIs with `requestMatchers`
 - compile with `-parameters` if method security relies on names
+- do not generate new security configuration that still uses Boot 2 or Security 5 APIs
 
 ### Auto-Configuration And Beans
 
@@ -120,7 +122,7 @@ Expected remediation:
 
 1. Baseline on latest 2.7.x with green tests.
 2. Raise Java to 17+ and align build plugins.
-3. Upgrade Boot and ecosystem dependencies.
+3. Upgrade Boot, ecosystem, and blocked plugin dependencies.
 4. Apply source changes: Jakarta, Security, auto-config, config properties, Hibernate.
 5. Verify compile, tests, startup, and smoke flows.
 

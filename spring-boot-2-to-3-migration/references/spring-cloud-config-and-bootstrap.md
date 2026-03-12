@@ -26,6 +26,8 @@ Spring Boot 2.x to 3.x migrations often fail in configuration loading before bus
 - `bootstrap.*` usually indicates older config-loading behavior.
 - Prefer the current Config Data approach where supported.
 - If both legacy bootstrap and newer config imports appear in the same repository, treat that as a manual-review hotspot.
+- Do not invent new `application-dev.yml`, `application-perf.yml`, `application-prod.yml`, or other profile overlays unless those files already exist or the user explicitly asks for them.
+- If the intended config-loading order is unclear, stop and ask for the expected runtime model instead of synthesizing new config files.
 
 ### Verification
 

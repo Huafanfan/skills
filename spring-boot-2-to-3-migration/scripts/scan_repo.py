@@ -848,7 +848,7 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
             phase="Phase 1.5",
             path=path,
             title="Review Spring Cloud and config loading compatibility",
-            action="Align the Spring Cloud release train with the target Spring Boot version and decide whether this file should stay on Config Data, move away from bootstrap-era behavior, or both.",
+            action="Align the Spring Cloud release train with the target Spring Boot version and decide whether this file should stay on Config Data, move away from bootstrap-era behavior, or both. Do not invent new profile-specific config files unless the repository already uses them or the user explicitly asks for them.",
             verify="Start config clients and servers after the upgrade and confirm remote properties load in the expected order.",
             priority="high",
         )
@@ -859,7 +859,7 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
             phase="Phase 1.5",
             path=path,
             title="Migrate bootstrap-era configuration",
-            action="Review bootstrap-specific properties and move them to the supported Config Data model where required by the target Spring Cloud line.",
+            action="Review bootstrap-specific properties and move them to the supported Config Data model where required by the target Spring Cloud line. If the intended runtime config layout is unclear, report it instead of synthesizing new config files.",
             verify="Start the application and confirm external config still loads without bootstrap-specific assumptions.",
             priority="high",
         )
@@ -881,7 +881,7 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
             phase="Phase 3",
             path=path,
             title="Migrate Spring Security 5-era DSL",
-            action="Replace `WebSecurityConfigurerAdapter` with bean-based `SecurityFilterChain` configuration and migrate matcher APIs to `requestMatchers`. Review authentication manager wiring and method-security parameter names as needed.",
+            action="Replace `WebSecurityConfigurerAdapter` with bean-based `SecurityFilterChain` configuration and migrate matcher APIs to `requestMatchers`. Review authentication manager wiring and method-security parameter names as needed. Prefer editing the existing security config instead of generating a new Boot 2-style class.",
             verify="Run security-related tests and start the app to confirm the filter chain builds cleanly.",
             priority="high",
         )
@@ -903,7 +903,7 @@ def build_todo_items(root: Path, build: dict, text_scan: dict, dep_summary: dict
             phase="Phase 3",
             path=path,
             title="Review configuration properties binding",
-            action="Check for renamed properties, constructor-binding assumptions, validation issues, and any temporary use of the Spring properties migrator.",
+            action="Check for renamed properties, constructor-binding assumptions, validation issues, and any temporary use of the Spring properties migrator. Prefer editing the existing config file or properties class instead of creating new environment overlays.",
             verify="Start the app and confirm property binding succeeds without warnings or missing values.",
             priority="medium",
         )
@@ -1041,7 +1041,7 @@ def build_command_plan(root: Path, build: dict, text_scan: dict) -> list[dict]:
             add_command("Phase 2", "Optional OpenRewrite run for Boot 3 migration", rewrite_cmd)
         add_command(
             "Phase 2",
-            "Probe Maven anchor versions if repository gateway rejects a version",
+            "Probe Maven dependency or plugin versions if the repository gateway rejects a version",
             (
                 f"python3 {shlex.quote(str(probe_script))} {repo_arg} "
                 f"--output-dir {shlex.quote(str(root / '.migration-work' / 'spring-boot-2-to-3'))}"
@@ -1099,8 +1099,8 @@ def phase_plan(findings: list[dict], build: dict) -> list[str]:
     steps = [
         "Phase 0: capture baseline build, tests, runtime entrypoint, and working tree state.",
         "Phase 1: align Java toolchain, wrapper, plugins, and CI runtime.",
-        "Phase 2: align framework and library versions before code edits.",
-        "Phase 3: apply source and configuration changes driven by scan findings.",
+        "Phase 2: align framework, library, and blocked plugin versions before code edits.",
+        "Phase 3: apply source and configuration changes driven by scan findings without inventing new environment-specific config structure.",
         "Phase 4: compile, test, start the application, and smoke critical flows.",
     ]
     spring_versions = build["spring_boot_versions"]

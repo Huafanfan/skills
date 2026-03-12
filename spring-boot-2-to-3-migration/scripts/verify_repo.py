@@ -191,8 +191,8 @@ def classify_failure(output: str) -> tuple[str, str]:
 def suggested_repairs(category: str) -> list[str]:
     suggestions = {
         "dependency_resolution": [
-            "Probe Maven anchor artifacts for visible and downloadable versions before declaring the repository blocked.",
-            "Update the version-managing build file to the first downloadable candidate and rerun the failed stage.",
+            "Probe Spring Boot, Spring Cloud, and failing Maven plugin artifacts for visible and downloadable versions before declaring the repository blocked.",
+            "Update the version-managing build file or the blocked plugin version to the first downloadable candidate and rerun the failed stage.",
         ],
         "build_wrapper": [
             "Restore executable permissions on `mvnw` or `gradlew`, or use the system Maven or Gradle command if that is the repository standard.",
@@ -248,6 +248,21 @@ def suggested_repairs(category: str) -> list[str]:
 
 def extract_artifact_specs(output: str) -> list[str]:
     specs: list[str] = []
+    plugin_patterns = [
+        r"Plugin\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)\s+or one of its dependencies could not be resolved",
+        r"plugin\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)\s+or one of its dependencies could not be resolved",
+        r"Failed to execute goal\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
+    ]
+    for pattern in plugin_patterns:
+        for match in re.finditer(pattern, output):
+            groups = match.groups()
+            if len(groups) == 3:
+                group_id, artifact_id, version = groups
+            else:
+                group_id, artifact_id, version, _goal = groups
+            spec = f"{group_id}:{artifact_id}:maven-plugin@{version}"
+            if spec not in specs:
+                specs.append(spec)
     patterns = [
         r"Could not find artifact\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
         r"artifact\s+([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)",
@@ -308,11 +323,11 @@ def summarize_dependency_probe(probe_report: dict) -> tuple[str, list[str]]:
         )
     if downloadable:
         return (
-            "Dependency resolution failed, but downloadable replacement versions were found. Update the version-managing build files to one of the probe results and rerun verification.",
+            "Dependency or plugin resolution failed, but downloadable replacement versions were found. Update the version-managing build files or the blocked plugin version to one of the probe results and rerun verification.",
             downloadable + attempted,
         )
     return (
-        "Dependency resolution failed and no downloadable candidate was found among the visible versions that were probed.",
+        "Dependency or plugin resolution failed and no downloadable candidate was found among the visible versions that were probed.",
         attempted,
     )
 

@@ -49,8 +49,10 @@ The skill does not require `rg`; its generated search commands now use `search_r
 When verification is environment-blocked, the verifier writes `verification-handoff.md` instead of treating that situation as a source-code migration failure.
 Do not guess startup commands, smoke commands, or endpoints. If they are unknown, leave them unconfigured.
 Keep each edit batch narrow: one blocker type at a time, or at most three files from the same blocker category.
-For Maven dependency resolution failures, probe Spring Boot or Spring Cloud anchor artifacts for visible and downloadable versions before declaring the migration blocked.
+For Maven dependency resolution failures, probe Spring Boot, Spring Cloud, and the failing Maven plugin artifact for visible and downloadable versions before declaring the migration blocked.
 If a build or runtime problem falls outside the skill's explicit coverage, do not stop at "unknown error". Keep working the first root cause, use normal repository debugging, and leave a clear `risk-register.md` trail for anything that remains uncertain.
+Do not invent new `application-dev.yml`, `application-perf.yml`, `application-prod.yml`, or similar environment files just to make Boot 3 start. If config structure is unclear, report the incompatibility and ask for the intended runtime layout instead.
+Prefer editing existing Java configuration classes over generating new ones. If a new class is unavoidable, it must use Boot 3 and Security 6 APIs only.
 
 The intermediate Spring Boot `2.7.x` step is intentional.
 It is the last Boot 2 line, exposes the closest compatible deprecations and property changes, and makes the final jump to Boot 3 materially safer than jumping from older 2.x baselines.

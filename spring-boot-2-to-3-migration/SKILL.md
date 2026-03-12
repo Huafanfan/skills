@@ -113,8 +113,8 @@ Default verification loop:
 Special rule for Maven dependency resolution failures:
 
 - Do not immediately mark the repository blocked when the build tool can still reach Nexus or the repository manager.
-- Run `scripts/probe_versions.py` to collect visible versions for Spring Boot or Spring Cloud anchor artifacts and probe them until a downloadable candidate is found.
-- Update the version-managing build file to the first downloadable candidate and rerun the failed stage.
+- Run `scripts/probe_versions.py` to collect visible versions for Spring Boot, Spring Cloud, or the failing Maven plugin artifact and probe them until a downloadable candidate is found.
+- Update the version-managing build file or failing plugin version to the first downloadable candidate and rerun the failed stage.
 - Only treat the repository as blocked when repository access itself is broken, local cache state is unusable, or no relevant candidate can be probed at all.
 
 State machine:
@@ -159,6 +159,11 @@ If the verifier produces a handoff instead of a failure summary, continue source
 - Treat `WebSecurityConfigurerAdapter`, `authorizeRequests`, `antMatchers`, and `mvcMatchers` as security migration blockers.
 - Treat `spring.factories`, starter modules, and custom auto-configuration as bean-loading risks that need manual review.
 - Treat JPA usage as a Hibernate 6 review surface, not only an import-rename task.
+- Do not create new `application-*.yml`, `application-*.yaml`, `application-*.properties`, profile overlays, or environment-specific config files unless the repository already uses that pattern or the user explicitly asks for it.
+- If a configuration path is incompatible but the target runtime layout is unclear, report the incompatibility and required user input instead of inventing new config structure.
+- Prefer editing existing configuration files only when a failing property, import, or bootstrap/config-data path points to a concrete incompatibility.
+- Prefer editing existing Java configuration over generating new classes. Only add a new Java file when replacing a removed Boot 2 mechanism requires it and the repository already has a clear matching pattern.
+- Any new or rewritten Java configuration must target Spring Boot 3 and Spring Security 6 APIs. Do not introduce `WebSecurityConfigurerAdapter`, `authorizeRequests`, `antMatchers`, `mvcMatchers`, or Jakarta regressions in newly written code.
 - Prefer removing root causes over adding blanket JVM flags.
 - Do not guess startup commands, smoke commands, HTTP endpoints, or deployment topology.
 - Do not start the next phase while the current phase is still `failed`.

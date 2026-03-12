@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe Maven artifact versions until a downloadable candidate is found."""
+"""Probe Maven dependency or plugin versions until a downloadable candidate is found."""
 
 from __future__ import annotations
 
@@ -376,7 +376,7 @@ def write_outputs(report: dict, output_dir: Path | None, output_format: str) -> 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect visible Maven artifact versions and probe them until a downloadable candidate is found.",
+        description="Collect visible Maven dependency or plugin versions and probe them until a downloadable candidate is found.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """\
